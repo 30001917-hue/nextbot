@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nextbot: The Office</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 5;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 4px; height: 4px;
+            background: rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+        #stamina-container {
+            position: absolute;
+            bottom: 30px; left: 30px;
+            width: 300px; height: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 2px solid #333;
+        }
+        #stamina-bar {
+            width: 100%; height: 100%;
+            background: #fff;
+            transition: width 0.1s linear, background-color 0.2s;
+        }
+        #blocker {
+            position: absolute;
+            width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.8);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            pointer-events: auto;
+            color: white;
+        }
+        #instructions {
+            text-align: center;
+            cursor: pointer;
+            padding: 40px;
+            background: #111;
+            border: 1px solid #444;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+        }
+        h1 {
+            font-size: 3rem;
+            margin: 0 0 10px 0;
+            letter-spacing: 2px;
+        }
+        .subtitle { color: #888; margin-bottom: 30px; }
+        .keys { font-family: monospace; color: #ffeb3b; }
+        
+        #jumpscare {
+            display: none;
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 20;
+            background-color: black;
+            background-size: contain;
+            background-position: center;
+            background-repeat: no-repeat;
+            pointer-events: auto;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-end;
+        }
+        #jumpscare h1 {
+            color: red;
+            font-size: 5rem;
+            text-shadow: 0 0 20px darkred;
+            margin-bottom: 50px;
+        }
+        .btn {
+            margin-bottom: 50px;
+            padding: 15px 30px;
+            background: red;
+            color: white;
+            border: none;
+            font-size: 1.5rem;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .btn:hover { background: darkred; }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="ui-layer">
+        <div id="crosshair"></div>
+        <div id="stamina-container">
+            <div id="stamina-bar"></div>
+        </div>
+    </div>
+
+    <div id="blocker">
+        <div id="instructions">
+            <h1>NEXTBOT: OFFICE</h1>
+            <p class="subtitle">It knows where you are. Do not stop running.</p>
+            <p>
+                <span class="keys">WASD</span> to Move<br><br>
+                <span class="keys">SHIFT</span> to Sprint<br><br>
+                <span class="keys">MOUSE</span> to Look
+            </p>
+            <p style="margin-top: 30px; font-weight: bold;">CLICK TO SURVIVE</p>
+        </div>
+    </div>
+
+    <div id="jumpscare">
+        <h1>CAUGHT</h1>
+        <button class="btn" onclick="location.reload()">TRY AGAIN</button>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+        // --- Game State ---
+        let camera, scene, renderer, controls;
+        let nextbot, nextbotMaterial;
+        let lastTime = performance.now();
+        let gameActive = false;
+
+        // Player Stats
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let isSprinting = false;
+        let stamina = 100;
+        const maxStamina = 100;
+        const walkSpeed = 35.0;
+        const sprintSpeed = 70.0;
+        
+        // Audio
+        let audioCtx, chaseOsc, chaseLfo, chaseGain;
+        let jumpScareAudio;
+
+        // Office Map generation
+        const mapSize = 40;
+        const tileSize = 5;
+        const walls = [];
+        const lights = [];
+
+        init();
+        animate();
+
+        function createScaryFaceTexture() {
+            // Programmatically draw a terrifying Nextbot face
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+
+            // Distorted background
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(0, 0, 512, 512);
+
+            // Add noise
+            const imgData = ctx.getImageData(0, 0, 512, 512);
+            for(let i = 0; i < imgData.data.length; i += 4) {
+                const noise = Math.random() * 50;
+                imgData.data[i] += noise;
+                imgData.data[i+1] += noise;
+                imgData.data[i+2] += noise;
+            }
+            ctx.putImageData(imgData, 0, 0);
+
+            // Hollow Eyes
+            ctx.fillStyle = '#000';
+            ctx.beginPath(); ctx.ellipse(150, 200, 60, 80, 0, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.ellipse(360, 200, 60, 80, 0, 0, Math.PI*2); ctx.fill();
+            
+            // Tiny glowing pupils
+            ctx.fillStyle = '#fff';
+            ctx.beginPath(); ctx.arc(150, 200, 5, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(360, 200, 5, 0, Math.PI*2); ctx.fill();
+
+            // Unnatural wide smile
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.moveTo(100, 350);
+            ctx.quadraticCurveTo(256, 450, 412, 350);
+            ctx.quadraticCurveTo(256, 380, 100, 350);
+            ctx.fill();
+
+            // Teeth
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 4;
+            for(let i=0; i<15; i++) {
+                ctx.beginPath();
+                ctx.moveTo(120 + (i*20), 360);
+                ctx.lineTo(120 + (i*20), 400 + (Math.sin(i)*10));
+                ctx.stroke();
+            }
+
+            return { texture: new THREE.CanvasTexture(canvas), dataUrl: canvas.toDataURL() };
+        }
+
+        function init() {
+            // 1. Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+            scene.fog = new THREE.FogExp2(0x050505, 0.04);
+
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.y = 2.5;
+
+            // 2. Graphics Details - Materials
+            const floorMat = new THREE.MeshStandardMaterial({ 
+                color: 0x2a2a2a, roughness: 0.2, metalness: 0.1 
+            }); // Shiny linoleum
+            const ceilingMat = new THREE.MeshStandardMaterial({ 
+                color: 0x111111, roughness: 0.9 
+            }); // Dark drop ceiling
+            const wallMat = new THREE.MeshStandardMaterial({ 
+                color: 0x444433, roughness: 0.8 
+            }); // Dirty office walls
+
+            // 3. Build Office Environment
+            const floorGeo = new THREE.PlaneGeometry(mapSize * tileSize, mapSize * tileSize);
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            scene.add(floor);
+
+            const ceiling = new THREE.Mesh(floorGeo, ceilingMat);
+            ceiling.rotation.x = Math.PI / 2;
+            ceiling.position.y = 6;
+            scene.add(ceiling);
+
+            // Generate Walls (Grid Maze)
+            const wallGeo = new THREE.BoxGeometry(tileSize, 6, tileSize);
+            for (let x = -mapSize/2; x < mapSize/2; x++) {
+                for (let z = -mapSize/2; z < mapSize/2; z++) {
+                    // Create border walls and random inner office cubicles
+                    if (Math.abs(x) === mapSize/2 - 1 || Math.abs(z) === mapSize/2 - 1 || (Math.random() > 0.85 && Math.abs(x) > 2 && Math.abs(z) > 2)) {
+                        const wall = new THREE.Mesh(wallGeo, wallMat);
+                        wall.position.set(x * tileSize, 3, z * tileSize);
+                        scene.add(wall);
+                        
+                        // Store bounding box for collision
+                        const box = new THREE.Box3().setFromObject(wall);
+                        walls.push(box);
+                    }
+                }
+            }
+
+            // Fluorescent Lights
+            for(let i=0; i<15; i++) {
+                const px = (Math.random() - 0.5) * (mapSize * tileSize - 10);
+                const pz = (Math.random() - 0.5) * (mapSize * tileSize - 10);
+                const light = new THREE.PointLight(0xfffaea, 2, 25);
+                light.position.set(px, 5.5, pz);
+                scene.add(light);
+                lights.push(light);
+
+                // Light fixture visual
+                const fixGeo = new THREE.BoxGeometry(2, 0.1, 0.5);
+                const fixMat = new THREE.MeshBasicMaterial({color: 0xffffff});
+                const fixture = new THREE.Mesh(fixGeo, fixMat);
+                fixture.position.set(px, 5.9, pz);
+                scene.add(fixture);
+            }
+
+            // 4. Create the Nextbot
+            const faceData = createScaryFaceTexture();
+            const nextbotGeo = new THREE.PlaneGeometry(4, 4);
+            nextbotMaterial = new THREE.MeshBasicMaterial({ 
+                map: faceData.texture, 
+                transparent: true,
+                depthWrite: false // Prevents sorting issues
+            });
+            nextbot = new THREE.Mesh(nextbotGeo, nextbotMaterial);
+            nextbot.position.set(20, 2, -20);
+            scene.add(nextbot);
+
+            // Save image for jumpscare UI
+            document.getElementById('jumpscare').style.backgroundImage = `url(${faceData.dataUrl})`;
+
+            // 5. Renderer setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // 6. Controls
+            controls = new PointerLockControls(camera, document.body);
+            const blocker = document.getElementById('blocker');
+            const instructions = document.getElementById('instructions');
+
+            instructions.addEventListener('click', function () { controls.lock(); });
+            controls.addEventListener('lock', function () {
+                blocker.style.display = 'none';
+                if(!gameActive) {
+                    gameActive = true;
+                    initAudio();
+                }
+            });
+            controls.addEventListener('unlock', function () {
+                if(gameActive) blocker.style.display = 'flex';
+            });
+            scene.add(controls.getObject());
+
+            // 7. Input Listeners
+            document.addEventListener('keydown', (e) => {
+                switch(e.code) {
+                    case 'KeyW': moveForward = true; break;
+                    case 'KeyA': moveLeft = true; break;
+                    case 'KeyS': moveBackward = true; break;
+                    case 'KeyD': moveRight = true; break;
+                    case 'ShiftLeft': isSprinting = true; break;
+                }
+            });
+            document.addEventListener('keyup', (e) => {
+                switch(e.code) {
+                    case 'KeyW': moveForward = false; break;
+                    case 'KeyA': moveLeft = false; break;
+                    case 'KeyS': moveBackward = false; break;
+                    case 'KeyD': moveRight = false; break;
+                    case 'ShiftLeft': isSprinting = false; break;
+                }
+            });
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function initAudio() {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // Heavy distorted bass for chasing
+            chaseOsc = audioCtx.createOscillator();
+            chaseOsc.type = 'sawtooth';
+            chaseOsc.frequency.value = 50; 
+            
+            chaseLfo = audioCtx.createOscillator();
+            chaseLfo.type = 'square';
+            chaseLfo.frequency.value = 8; // Fast pulsing
+
+            const lfoGain = audioCtx.createGain();
+            lfoGain.gain.value = 50;
+            chaseLfo.connect(lfoGain);
+            lfoGain.connect(chaseOsc.frequency);
+
+            chaseGain = audioCtx.createGain();
+            chaseGain.gain.value = 0; // Starts silent
+
+            chaseOsc.connect(chaseGain);
+            chaseGain.connect(audioCtx.destination);
+
+            chaseOsc.start();
+            chaseLfo.start();
+        }
+
+        function playJumpscareSound() {
+            if(!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 1);
+            gain.gain.setValueAtTime(1, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 1);
+        }
+
+        function checkCollision(targetPosition) {
+            const playerRadius = 1.0;
+            const pBox = new THREE.Box3(
+                new THREE.Vector3(targetPosition.x - playerRadius, 0, targetPosition.z - playerRadius),
+                new THREE.Vector3(targetPosition.x + playerRadius, 5, targetPosition.z + playerRadius)
+            );
+            for(let i=0; i<walls.length; i++) {
+                if(pBox.intersectsBox(walls[i])) return true;
+            }
+            return false;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const time = performance.now();
+            const delta = (time - lastTime) / 1000;
+            lastTime = time;
+
+            if (controls.isLocked === true && gameActive) {
+                // --- Player Movement & Stamina ---
+                let speed = walkSpeed;
+                if (isSprinting && stamina > 0 && (moveForward || moveBackward || moveLeft || moveRight)) {
+                    speed = sprintSpeed;
+                    stamina -= 30 * delta; // Drain stamina
+                } else {
+                    stamina += 15 * delta; // Recover stamina
+                }
+                stamina = Math.max(0, Math.min(maxStamina, stamina));
+                
+                // Update UI
+                const stamBar = document.getElementById('stamina-bar');
+                stamBar.style.width = stamina + '%';
+                stamBar.style.backgroundColor = stamina < 20 ? 'red' : 'white';
+
+                // Physics
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+
+                if (moveForward || moveBackward) velocity.z -= direction.z * speed * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * speed * delta;
+
+                // Collision detection before moving
+                const nextPos = camera.position.clone();
+                nextPos.x += velocity.x * delta;
+                nextPos.z += velocity.z * delta;
+
+                if (!checkCollision(nextPos)) {
+                    controls.moveRight(-velocity.x * delta);
+                    controls.moveForward(-velocity.z * delta);
+                }
+
+                // Head bobbing effect
+                if(direction.lengthSq() > 0) {
+                    camera.position.y = 2.5 + Math.sin(time * (isSprinting ? 0.015 : 0.01)) * 0.1;
+                }
+
+                // --- Nextbot Logic ---
+                // Always face player (Billboard effect)
+                nextbot.lookAt(camera.position);
+                // Keep Nextbot upright
+                nextbot.rotation.x = 0; 
+                nextbot.rotation.z = 0;
+
+                // Move towards player (Pathfinding/Sliding)
+                const botSpeed = 16.0; // Relentless pace
+                const botDir = new THREE.Vector3();
+                botDir.subVectors(camera.position, nextbot.position).normalize();
+                botDir.y = 0; // Keep on floor
+                
+                nextbot.position.addScaledVector(botDir, botSpeed * delta);
+
+                // Slight hover/bounce effect native to Nextbots
+                nextbot.position.y = 2 + Math.abs(Math.sin(time * 0.02)) * 0.5;
+
+                // Distance checks
+                const dist = nextbot.position.distanceTo(camera.position);
+
+                // Audio intensity
+                if(chaseGain) {
+                    // Gets loud when within 30 units
+                    const vol = Math.max(0, 1 - (dist / 30));
+                    chaseGain.gain.value = vol * 0.5;
+                    chaseLfo.frequency.value = 5 + (vol * 15);
+                }
+
+                // Jumpscare / Game Over
+                if(dist < 2.5) {
+                    gameActive = false;
+                    controls.unlock();
+                    if(chaseGain) chaseGain.gain.value = 0;
+                    playJumpscareSound();
+                    document.getElementById('jumpscare').style.display = 'flex';
+                }
+
+                // --- Environment Effects ---
+                // Randomly flicker office lights
+                lights.forEach(light => {
+                    if(Math.random() > 0.95) {
+                        light.intensity = Math.random() > 0.5 ? 2 : 0;
+                    } else {
+                        light.intensity = 2;
+                    }
+                });
+            }
+
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
